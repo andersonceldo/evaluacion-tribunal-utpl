@@ -27,7 +27,7 @@ def cargar_evaluadores():
     if os.path.exists(EVALUADORES_FILE):
         try:
             df = pd.read_csv(EVALUADORES_FILE, encoding='utf-8')
-        except UnicodeDecodeError:
+        except Exception:
             df = pd.read_csv(EVALUADORES_FILE, encoding='latin-1')
         return df["correo"].str.strip().str.lower().tolist()
     return []
@@ -36,10 +36,37 @@ def cargar_evaluadores():
 def cargar_estudiantes():
     if os.path.exists(ESTUDIANTES_FILE):
         try:
-            df = pd.read_csv(ESTUDIANTES_FILE, encoding='utf-8')
-        except UnicodeDecodeError:
-            df = pd.read_csv(ESTUDIANTES_FILE, encoding='latin-1')
-        df['CORREO PRESIDENTE'] = df['CORREO PRESIDENTE'].str.strip().str.lower()
+            # ¡Usa sep=";" y maneja espacios!
+            df = pd.read_csv(
+                ESTUDIANTES_FILE,
+                sep=";",
+                encoding='utf-8',
+                skipinitialspace=True,
+                quotechar='"'
+            )
+        except Exception as e1:
+            try:
+                df = pd.read_csv(
+                    ESTUDIANTES_FILE,
+                    sep=";",
+                    encoding='latin-1',
+                    skipinitialspace=True,
+                    quotechar='"'
+                )
+            except Exception as e2:
+                st.error(f"Error al leer estudiantes.csv: {e2}")
+                return pd.DataFrame()
+        
+        # Limpiar nombres de columnas: quitar espacios al inicio/final
+        df.columns = df.columns.str.strip()
+        
+        # Verificar que exista la columna clave
+        if "CORREO PRESIDENTE" not in df.columns:
+            st.error(f"❌ Columnas disponibles: {list(df.columns)}")
+            return pd.DataFrame()
+        
+        # Normalizar la columna de correos
+        df["CORREO PRESIDENTE"] = df["CORREO PRESIDENTE"].astype(str).str.strip().str.lower()
         return df
     else:
         st.error("Archivo 'estudiantes.csv' no encontrado.")
