@@ -75,19 +75,23 @@ def cargar_estudiantes():
 # Conectar a Google Sheets
 @st.cache_resource
 def conectar_sheets():
-    try:
+    # Solo usa Secrets en producción (Streamlit Cloud)
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
-    except:
-        # Para pruebas locales
-        credentials = service_account.Credentials.from_service_account_file(
-            "service_account.json",
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
+    except Exception as e:
+        # Si falla (ej. en local sin secrets), muestra error
+        st.error(f"❌ Error de autenticación: {str(e)}")
+        st.info("Para ejecutar localmente, coloque el archivo 'service_account.json' en la misma carpeta.")
+        return None
+    
     client = gspread.authorize(credentials)
-    return client.open_by_key(GOOGLE_SHEET_ID).sheet1
+    try:
+        return client.open_by_key(GOOGLE_SHEET_ID).sheet1
+    except Exception as e:
+        st.error(f"❌ Error al abrir Google Sheet: {str(e)}")
+        return None
 
 # Inicializar estado
 if "autenticado" not in st.session_state:
