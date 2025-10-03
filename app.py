@@ -25,9 +25,25 @@ def cargar_estudiantes():
 @st.cache_data
 def cargar_evaluadores():
     if os.path.exists(EVALUADORES_FILE):
-        df = pd.read_csv(EVALUADORES_FILE)
+        try:
+            df = pd.read_csv(EVALUADORES_FILE, encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(EVALUADORES_FILE, encoding='latin-1')
         return df["correo"].str.strip().str.lower().tolist()
     return []
+
+@st.cache_data
+def cargar_estudiantes():
+    if os.path.exists(ESTUDIANTES_FILE):
+        try:
+            df = pd.read_csv(ESTUDIANTES_FILE, encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(ESTUDIANTES_FILE, encoding='latin-1')
+        df['CORREO PRESIDENTE'] = df['CORREO PRESIDENTE'].str.strip().str.lower()
+        return df
+    else:
+        st.error("Archivo 'estudiantes.csv' no encontrado.")
+        return pd.DataFrame()
 
 # Conectar a Google Sheets
 @st.cache_resource
