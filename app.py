@@ -75,6 +75,7 @@ def cargar_estudiantes():
 # Conectar a Google Sheets
 @st.cache_resource
 def conectar_sheets():
+    try:
     # Solo usa Secrets en producción (Streamlit Cloud)
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
