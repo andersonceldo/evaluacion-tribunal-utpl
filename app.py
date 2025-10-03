@@ -10,18 +10,7 @@ ESTUDIANTES_FILE = "estudiantes.csv"
 EVALUADORES_FILE = "evaluadores.csv"
 GOOGLE_SHEET_ID = "1OhYdsqSuDCrPuO8TxzbTbGqY3nyrJjJwQaCgV_cvjOU"
 
-# Cargar datos
-@st.cache_data
-def cargar_estudiantes():
-    if os.path.exists(ESTUDIANTES_FILE):
-        df = pd.read_csv(ESTUDIANTES_FILE, encoding='utf-8')
-        # Normalizar correos
-        df['CORREO PRESIDENTE'] = df['CORREO PRESIDENTE'].str.strip().str.lower()
-        return df
-    else:
-        st.error("Archivo 'estudiantes.csv' no encontrado.")
-        return pd.DataFrame()
-
+# === CARGA DE DATOS ===
 @st.cache_data
 def cargar_evaluadores():
     if os.path.exists(EVALUADORES_FILE):
@@ -36,7 +25,6 @@ def cargar_evaluadores():
 def cargar_estudiantes():
     if os.path.exists(ESTUDIANTES_FILE):
         try:
-            # ¡Usa sep=";" y maneja espacios!
             df = pd.read_csv(
                 ESTUDIANTES_FILE,
                 sep=";",
@@ -44,7 +32,7 @@ def cargar_estudiantes():
                 skipinitialspace=True,
                 quotechar='"'
             )
-        except Exception as e1:
+        except Exception:
             try:
                 df = pd.read_csv(
                     ESTUDIANTES_FILE,
@@ -53,59 +41,74 @@ def cargar_estudiantes():
                     skipinitialspace=True,
                     quotechar='"'
                 )
-            except Exception as e2:
-                st.error(f"Error al leer estudiantes.csv: {e2}")
+            except Exception as e:
+                st.error(f"Error al leer estudiantes.csv: {e}")
                 return pd.DataFrame()
         
-        # Limpiar nombres de columnas: quitar espacios al inicio/final
+        # Limpiar nombres de columnas
         df.columns = df.columns.str.strip()
         
-        # Verificar que exista la columna clave
+        # Manejar el salto de línea en el encabezado problemático
+        for col in df.columns:
+            if "OPCION DE TITULACION" in col.upper():
+                df.rename(columns={col: "OPCION DE TITULACION"}, inplace=True)
+                break
+        
         if "CORREO PRESIDENTE" not in df.columns:
             st.error(f"❌ Columnas disponibles: {list(df.columns)}")
             return pd.DataFrame()
         
-        # Normalizar la columna de correos
         df["CORREO PRESIDENTE"] = df["CORREO PRESIDENTE"].astype(str).str.strip().str.lower()
         return df
     else:
         st.error("Archivo 'estudiantes.csv' no encontrado.")
         return pd.DataFrame()
 
-# Conectar a Google Sheets
-@st.cache_resource
-def conectar_sheets():
+@st.cache_data(ttl=30)
+def cargar_evaluaciones_guardadas(correo_evaluador):
+    """Carga las evaluaciones ya guardadas por este evaluador desde Google Sheets"""
     try:
-    # Solo usa Secrets en producción (Streamlit Cloud)
         credentials = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
+        client = gspread.authorize(credentials)
+        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+        data = sheet.get_all_records()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        if "correo_evaluador" in df.columns:
+            return df[df["correo_evaluador"] == correo_evaluador]
+        return pd.DataFrame()
     except Exception as e:
-        # Si falla (ej. en local sin secrets), muestra error
-        st.error(f"❌ Error de autenticación: {str(e)}")
-        st.info("Para ejecutar localmente, coloque el archivo 'service_account.json' en la misma carpeta.")
-        return None
-    
-    client = gspread.authorize(credentials)
+        st.warning("No se pudieron cargar evaluaciones previas.")
+        return pd.DataFrame()
+
+@st.cache_resource
+def conectar_sheets():
     try:
+        credentials = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]  # ← sin espacios
+        )
+        client = gspread.authorize(credentials)
         return client.open_by_key(GOOGLE_SHEET_ID).sheet1
     except Exception as e:
-        st.error(f"❌ Error al abrir Google Sheet: {str(e)}")
+        st.error(f"❌ Error de autenticación: {str(e)}")
+        st.info("Verifique que los Secrets estén correctamente configurados.")
         return None
 
-# Inicializar estado
+# === INICIALIZAR SESIÓN ===
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
     st.session_state.correo = ""
     st.session_state.estudiantes_asignados = []
-    st.session_state.estudiante_seleccionado = None
 
 # === PANTALLA DE LOGIN ===
 if not st.session_state.autenticado:
     st.title("🔐 Sistema de Evaluación - Tribunal UTPL")
     st.subheader("Ingrese con su correo institucional (@utpl.edu.ec)")
-
     correo = st.text_input("Correo institucional")
     if st.button("Ingresar"):
         evaluadores = cargar_evaluadores()
@@ -114,37 +117,53 @@ if not st.session_state.autenticado:
             st.session_state.autenticado = True
             st.session_state.correo = correo_limpio
 
-            # Filtrar estudiantes asignados a este presidente
+            # Cargar estudiantes asignados
             df_estudiantes = cargar_estudiantes()
-            asignados = df_estudiantes[df_estudiantes['CORREO PRESIDENTE'] == correo_limpio]
-
-            if len(asignados) == 0:
-                st.warning("No tiene estudiantes asignados.")
+            if df_estudiantes.empty:
+                st.error("No se pudieron cargar los datos de estudiantes.")
+                st.session_state.autenticado = False
             else:
+                asignados = df_estudiantes[df_estudiantes['CORREO PRESIDENTE'] == correo_limpio].copy()
+
+                # Excluir ya calificados
+                evaluaciones_hechas = cargar_evaluaciones_guardadas(correo_limpio)
+                if not evaluaciones_hechas.empty and not asignados.empty:
+                    cedulas_hechas = set(evaluaciones_hechas["cedula"].astype(str))
+                    asignados = asignados[~asignados["CEDULA"].astype(str).isin(cedulas_hechas)]
+
                 st.session_state.estudiantes_asignados = asignados.to_dict('records')
                 st.rerun()
         else:
             st.error("❌ Acceso denegado. Solo presidentes del tribunal pueden ingresar.")
-
 else:
-    # === SELECCIÓN DE ESTUDIANTE ===
+    # === PANEL PRINCIPAL ===
     st.title("📋 Evaluación del Trabajo de Integración Curricular")
     st.markdown(f"**Evaluador:** {st.session_state.correo}")
 
+    # Botón para ver evaluaciones anteriores
+    if st.button("📊 Ver evaluaciones ya calificadas"):
+        evaluaciones_hechas = cargar_evaluaciones_guardadas(st.session_state.correo)
+        if evaluaciones_hechas.empty:
+            st.info("No ha calificado a ningún estudiante aún.")
+        else:
+            st.subheader("Evaluaciones realizadas")
+            cols_mostrar = ["nombre_estudiante", "titulacion", "hora", "fecha", "calificacion_total"]
+            if all(col in evaluaciones_hechas.columns for col in cols_mostrar):
+                st.dataframe(
+                    evaluaciones_hechas[cols_mostrar].sort_values("fecha", ascending=False),
+                    use_container_width=True
+                )
+            else:
+                st.write(evaluaciones_hechas)
+
+    # Mostrar estudiantes pendientes
     if len(st.session_state.estudiantes_asignados) == 0:
-        st.info("No tiene estudiantes asignados para evaluar.")
-        if st.button("Cerrar sesión"):
-            st.session_state.autenticado = False
-            st.session_state.correo = ""
-            st.session_state.estudiantes_asignados = []
-            st.rerun()
+        st.info("No tiene estudiantes pendientes por evaluar.")
     else:
-        # Mostrar lista de estudiantes
         nombres_estudiantes = [
             f"{row['APELLIDOS Y NOMBRES']} - {row['TITULACION']} ({row['HORA']})"
             for row in st.session_state.estudiantes_asignados
         ]
-
         seleccion = st.selectbox("Seleccione el estudiante a evaluar:", nombres_estudiantes)
         indice = nombres_estudiantes.index(seleccion)
         estudiante = st.session_state.estudiantes_asignados[indice]
@@ -189,47 +208,50 @@ else:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("💾 Guardar en Google Sheets"):
-                try:
-                    sheet = conectar_sheets()
+                sheet = conectar_sheets()
+                if sheet is None:
+                    st.error("No se puede guardar: error de conexión.")
+                else:
+                    try:
+                        if not sheet.acell("A1").value:
+                            headers = [
+                                "correo_evaluador", "cedula", "nombre_estudiante", "titulacion", "hora", "fecha",
+                                "calidad_material", "precision_exposicion", "centrado_tema",
+                                "introduccion", "metodologia", "resultados", "calificacion_total"
+                            ]
+                            sheet.append_row(headers)
 
-                    # Encabezados (solo primera vez)
-                    if not sheet.acell("A1").value:
-                        headers = [
-                            "correo_evaluador", "cedula", "nombre_estudiante", "titulacion", "hora", "fecha",
-                            "calidad_material", "precision_exposicion", "centrado_tema",
-                            "introduccion", "metodologia", "resultados", "calificacion_total"
+                        fila = [
+                            st.session_state.correo,
+                            str(estudiante['CEDULA']),
+                            estudiante['APELLIDOS Y NOMBRES'],
+                            estudiante['TITULACION'],
+                            estudiante['HORA'],
+                            estudiante['FECHA']
                         ]
-                        sheet.append_row(headers)
-
-                    # Datos
-                    fila = [
-                        st.session_state.correo,
-                        estudiante['CEDULA'],
-                        estudiante['APELLIDOS Y NOMBRES'],
-                        estudiante['TITULACION'],
-                        estudiante['HORA'],
-                        estudiante['FECHA']
-                    ]
-                    # Agregar calificaciones en orden
-                    fila.extend([
-                        calificaciones.get("Calidad y adecuada utilización del material de apoyo audiovisual o gráfico presentado", 0),
-                        calificaciones.get("Precisión y clara exposición oral", 0),
-                        calificaciones.get("Centra su intervención sobre los aspectos fundamentales del trabajo de integración curricular", 0),
-                        calificaciones.get("a) Introducción/Antecedentes, justificación y objetivos", 0),
-                        calificaciones.get("b) Metodología", 0),
-                        calificaciones.get("c) Resultados, discusión, conclusiones y recomendaciones", 0),
-                        round(total, 2)
-                    ])
-
-                    sheet.append_row(fila)
-                    st.success("✅ Evaluación guardada correctamente.")
-                except Exception as e:
-                    st.error(f"Error al guardar: {str(e)}")
+                        fila.extend([
+                            calificaciones.get("Calidad y adecuada utilización del material de apoyo audiovisual o gráfico presentado", 0),
+                            calificaciones.get("Precisión y clara exposición oral", 0),
+                            calificaciones.get("Centra su intervención sobre los aspectos fundamentales del trabajo de integración curricular", 0),
+                            calificaciones.get("a) Introducción/Antecedentes, justificación y objetivos", 0),
+                            calificaciones.get("b) Metodología", 0),
+                            calificaciones.get("c) Resultados, discusión, conclusiones y recomendaciones", 0),
+                            round(total, 2)
+                        ])
+                        sheet.append_row(fila)
+                        st.success("✅ Evaluación guardada correctamente.")
+                        # Eliminar estudiante de la lista actual
+                        st.session_state.estudiantes_asignados = [
+                            e for e in st.session_state.estudiantes_asignados
+                            if e['CEDULA'] != estudiante['CEDULA']
+                        ]
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar: {str(e)}")
 
         with col2:
             if st.button("🚪 Regresar al menú inicial"):
                 st.session_state.autenticado = False
                 st.session_state.correo = ""
                 st.session_state.estudiantes_asignados = []
-                st.session_state.estudiante_seleccionado = None
                 st.rerun()
